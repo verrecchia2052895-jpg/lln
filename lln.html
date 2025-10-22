@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>LLN Simulator — Trajectories & Histogram</title>
+
+<!-- Chart.js from CDN -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+<style>
+  body { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial; max-width: 1100px; margin: 18px auto; padding: 14px; color:#111; }
+  h1 { margin:0 0 8px 0; font-size:20px; }
+  p { margin: 6px 0 12px; color:#444; }
+  .controls { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:12px; }
+  .control { display:flex; flex-direction:column; min-width:140px; }
+  label { font-size:13px; color:#222; margin-bottom:6px; font-weight:600; }
+  input[type=number], input[type=text], select { padding:8px; border-radius:8px; border:1px solid #ddd; font-size:14px; }
+  button { padding:8px 12px; border-radius:8px; border:1px solid #999; background:#f5f5f5; cursor:pointer; }
+  .row { display:flex; gap:18px; flex-wrap:wrap; }
+  .panel { background:#fafafa; border:1px solid #eee; border-radius:10px; padding:12px; box-shadow: 0 1px 2px rgba(0,0,0,0.03); }
+  #charts { display:flex; gap:18px; align-items:flex-start; margin-top:12px; }
+  #trajPanel { flex:1; min-width:420px; }
+  #histPanel { width:380px; }
+  canvas { width:100% !important; height:360px !important; }
+  .small { font-size:13px; color:#555; }
+  .stats { margin-top:8px; font-family:monospace; }
+  .warning { color:#a33; font-weight:700; }
+</style>
+</head>
+<body>
+  <h1>Law of Large Numbers — Simulator</h1>
+  <p>Simulate <em>m</em> independent Bernoulli trajectories of <em>n</em> trials and visualize the relative frequency f(n) = (#successes)/n over time. The histogram shows the distribution of final frequencies (across trajectories). Adjust parameters and press <strong>Run</strong>.</p>
+
+  <div class="controls panel">
+    <div class="control">
+      <label for="mTraj">Number of trajectories (m)</label>
+      <input id="mTraj" type="number" value="50" min="1" max="2000" step="1">
+      <span class="small">Recommended ≤ 200 for clear plots</span>
+    </div>
+
+    <div class="control">
+      <label for="nTrials">Trials per trajectory (n)</label>
+      <input id="nTrials" type="number" value="500" min="1" max="200000" step="1">
+      <span class="small">Large n → slower, but better convergence</span>
+    </div>
+
+    <div class="control">
+      <label for="probP">Probability of success (p)</label>
+      <input id="probP" type="text" value="0.3" pattern="0(\.\d+)?|1|0">
+      <span class="small">Enter a value between 0 and 1</span>
+    </div>
+
+    <div class="control">
+      <label for="bins">Histogram bins</label>
+      <input id="bins" type="number" value="20" min="5" max="200" step="1">
+    </div>
+
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button id="runBtn">Run Simulation</button>
+      <button id="downloadBtn">Download CSV</button>
+    </div>
+
+    <div style="margin-left:auto; text-align:right;">
+      <div class="small">Status: <span id="status">idle</span></div>
+      <div class="small warning" id="warn"></div>
+    </div>
+  </div>
+
+  <div id="charts">
+    <div id="trajPanel" class="panel">
+      <label style="font-weight:700">Trajectories (relative frequency f(n) over trials)</label>
+      <canvas id="trajChart"></canvas>
+      <div class="stats" id="trajStats"></div>
+    </div>
+
+    <div id="histPanel" class="panel">
+      <label style="font-weight:700">Histogram — final frequencies</label>
+      <canvas id="histChart" style="height:300px;"></canvas>
+      <div class="stats" id="histStats"></div>
+    </div>
+  </div>
+
+<script>
+/* ---------- Utilities ---------- */
+function randBool(p){ return Math.random() < p ? 1 : 0; }
+function mean(arr){ return arr.reduce((a,b)=>a+b,0)/arr.length; }
+function std(arr,m=null){
+  if(m===null) m=mean(arr);
+  return Math.sqrt(arr.reduce((s,x)=>s+(x-m)*(x-m),0)/arr.length);
+}
+
+/* ---------- Simulation (synchronous, but optimized) ---------- */
+function simulateLLN(m, n, p, onProgress=null){
+  // returns array of trajectories: all[i][t] = f_t for trajectory i at trial t (1..n)
+  // To save memory for large m*n, we store floats in nested arrays; if too big, we can subsample (not implemented here).
+  const all = new Array(m);
+  for(let i=0;i<m;i++){
+    const traj = new Float64Array(n);
+    let successes = 0;
+    for(let t=1;t<=n;t++){
+      if(Math.random() < p) successes++;
+      traj[t-1] = successes / t;
+    }
+    all[i] = traj;
+    if(onProgress && (i%10===0 || i===m-1)) onProgress(i+1, m);
+  }
+  return all;
+}
+
+/* ---------- Chart.js helpers ---------- */
+let trajChart = null, histChart = null;
+
+function plotTrajectories(all, p) {
+  const m = all.length;
+  const n = all[0].length;
+  // labels 1..n
+  const labels = Array.from({length:n}, (_,i)=>i+1);
+
+  // Create datasets — to avoid huge memory/time overhead in Chart.js, cap plotted trajectories if too many:
+  const maxPlotTraj = 300; // safety cap
+  const step = 1; // we can subsample if needed later
+
+  // Build dataset objects
+  const datasets = [];
+  const alpha = Math.min(0.15 + 0.65*Math.min(200, m)/200, 0.6); // opacity scale
+  const colorBase = 'rgba(30,120,220,'; // blue-ish
+
+  const toPlot = Math.min(m, maxPlotTraj);
+  for(let i=0;i<toPlot;i++){
+    const data = Array.from(all[i]); // convert typed array to normal array (Chart needs normal)
+    datasets.push({
+      label: 'traj ' + (i+1),
+      data: data,
+      borderWidth: 1,
+      pointRadius: 0,
+      fill: false,
+      tension: 0.25,
+      borderColor: colorBase + alpha + ')'
+    });
+  }
+
+  // If chart exists, destroy to avoid leaks
+  const ctx = document.getElementById('trajChart').getContext('2d');
+  if(trajChart) { trajChart.destroy(); trajChart = null; }
+
+  // Create chart
+  trajChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      animation: false,
+      plugins: {
+        legend: { display: false },
+        title: { display: false }
+      },
+      scales: {
+        x: { title: { display: true, text: 'Trial number n' } },
+        y: { min: 0, max: 1, title: { display: true, text: 'Relative frequency f(n)' } }
+      },
+      elements: { line: { borderWidth: 1 } }
+    }
+  });
+
+  // draw a horizontal line at p using plugin annotation substitute (Chart v4 has no built-in annotation here)
+  // draw manual line on canvas overlay:
+  const overlay = trajChart;
+  overlay.options.plugins.annotation = {}; // placeholder
+
+  // put stats text
+  const lastVals = all.map(tr => tr[tr.length-1]);
+  const mmean = mean(lastVals);
+  const mstd = std(lastVals, mmean);
+  document.getElementById('trajStats').textContent = `Final frequencies: mean=${mmean.toFixed(4)}, std=${mstd.toFixed(4)}, plotted ${toPlot}/${m} trajectories.`;
+  // draw p line by using chart plugin after render
+  requestAnimationFrame(()=> drawHorizontalLineOnChart(trajChart, p));
+}
+
+function drawHorizontalLineOnChart(chart, yVal){
+  if(!chart) return;
+  const ctx = chart.ctx;
+  const yScale = chart.scales.y;
+  const xScale = chart.scales.x;
+  const y = yScale.getPixelForValue(yVal);
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(xScale.left, y);
+  ctx.lineTo(xScale.right, y);
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6,6]);
+  ctx.strokeStyle = 'rgba(180,20,20,0.9)';
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(180,20,20,0.9)';
+  ctx.font = '12px Arial';
+  ctx.fillText('p = ' + yVal.toFixed(3), xScale.right - 70, y - 6);
+  ctx.restore();
+}
+
+function plotHistogram(finalFreqs, bins, p) {
+  // finalFreqs: array of numbers between 0 and 1
+  const min = 0, max = 1;
+  const binCount = Math.max(1, Math.min(500, Math.floor(bins)));
+  const binWidth = (max - min) / binCount;
+  const counts = new Array(binCount).fill(0);
+  for(const v of finalFreqs){
+    let b = Math.floor((v - min) / binWidth);
+    if(b < 0) b = 0;
+    if(b >= binCount) b = binCount - 1;
+    counts[b]++;
+  }
+  const labels = counts.map((_, i) => {
+    const a = (i*binWidth).toFixed(2);
+    const b = ((i+1)*binWidth).toFixed(2);
+    return `${a}-${b}`;
+  });
+
+  // Stats
+  const mmean = mean(finalFreqs);
+  const mstd = std(finalFreqs, mmean);
+  document.getElementById('histStats').textContent = `Final frequencies histogram: mean=${mmean.toFixed(4)}, std=${mstd.toFixed(4)}, nBins=${binCount}`;
+
+  // Plot
+  const ctx = document.getElementById('histChart').getContext('2d');
+  if(histChart) histChart.destroy();
+  histChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'count',
+        data: counts,
+        borderWidth: 1
+      }]
+    },
+    options: {
+      animation: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { maxRotation: 90, minRotation: 30 } },
+        y: { beginAtZero: true }
+      }
+    }
+  });
+
+  // draw vertical line for p on histogram
+  requestAnimationFrame(()=> drawVerticalLineOnChart(histChart, p));
+}
+
+function drawVerticalLineOnChart(chart, xVal){
+  // xVal is p in [0,1]; transform to bin index
+  if(!chart) return;
+  const data = chart.data;
+  const labels = data.labels;
+  // find the label whose range contains xVal
+  for(let i=0;i<labels.length;i++){
+    const label = labels[i]; // "a-b"
+    const [a,b] = label.split('-').map(s=>parseFloat(s));
+    if(xVal >= a && xVal <= b){
+      const meta = chart.getDatasetMeta(0);
+      const xScale = chart.scales.x;
+      const yScale = chart.scales.y;
+      const left = xScale.getPixelForValue(i) - xScale.getPixelForValue(0) + xScale.left;
+      // Instead draw text near top center
+      const ctx = chart.ctx;
+      ctx.save();
+      ctx.fillStyle = 'rgba(180,20,20,0.9)';
+      ctx.font = '12px Arial';
+      ctx.fillText('p', chart.width - 30, 14);
+      ctx.restore();
+      break;
+    }
+  }
+}
+
+/* ---------- Run / UI ---------- */
+document.getElementById('runBtn').addEventListener('click', async ()=>{
+  const m = Math.max(1, Math.floor(Number(document.getElementById('mTraj').value) || 50));
+  const n = Math.max(1, Math.floor(Number(document.getElementById('nTrials').value) || 500));
+  let p = parseFloat(document.getElementById('probP').value);
+  if(Number.isNaN(p) || p < 0 || p > 1) { alert('Enter a valid p between 0 and 1'); return; }
+  const bins = Math.max(5, Math.min(200, Math.floor(Number(document.getElementById('bins').value) || 20)));
+
+  // Safety checks
+  const warnEl = document.getElementById('warn');
+  warnEl.textContent = '';
+  if(m * n > 5e7){
+    if(!confirm('This simulation (m * n > 50 million) may be slow or crash the browser. Continue?')) return;
+  }
+  if(m > 1000) warnEl.textContent = 'Warning: plotting many trajectories may be slow.';
+
+  document.getElementById('status').textContent = 'running...';
+  await new Promise(r => setTimeout(r, 20)); // yield UI
+
+  // Simulate
+  const onProgress = (i, tot) => { document.getElementById('status').textContent = `simulated ${i}/${tot} trajectories`; };
+  const all = simulateLLN(m, n, p, onProgress);
+
+  // Plot trajectories
+  plotTrajectories(all, p);
+
+  // Histogram of final frequencies
+  const finals = all.map(tr => tr[tr.length-1]);
+  plotHistogram(finals, bins, p);
+
+  document.getElementById('status').textContent = `done — m=${m}, n=${n}, p=${p.toFixed(3)}`;
+});
+
+/* ---------- Download CSV ---------- */
+document.getElementById('downloadBtn').addEventListener('click', ()=>{
+  // Build CSV from current chart data (trajectories)
+  // If no trajChart or its datasets are empty, warn
+  if(!trajChart || !trajChart.data || !trajChart.data.datasets || trajChart.data.datasets.length===0){
+    alert('No simulation data to download. Run a simulation first.');
+    return;
+  }
+  const n = trajChart.data.labels.length;
+  const m = trajChart.data.datasets.length;
+  // CSV with header: trial, traj1, traj2, ...
+  let csv = 'trial';
+  for(let i=0;i<m;i++) csv += `,traj${i+1}`;
+  csv += '\n';
+  for(let t=0;t<n;t++){
+    let row = `${t+1}`;
+    for(let i=0;i<m;i++){
+      row += ',' + (trajChart.data.datasets[i].data[t] ?? '');
+    }
+    csv += row + '\n';
+  }
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'lln_trajectories.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+/* ---------- Initial small demo ---------- */
+document.addEventListener('DOMContentLoaded', ()=>{
+  // optional: run a tiny demo
+  //document.getElementById('runBtn').click();
+});
+</script>
+</body>
+</html>
