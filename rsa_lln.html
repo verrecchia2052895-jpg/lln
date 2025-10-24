@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Letter-by-Letter RSA Demo</title>
+<style>
+body { font-family: Arial, sans-serif; max-width: 900px; margin: auto; padding: 12px; background: #fff; }
+h1 { font-size: 22px; margin-bottom: 8px; }
+textarea { width: 100%; height: 120px; padding: 8px; font-family: monospace; margin-bottom: 8px; }
+input[type=number], input[type=text] { padding: 6px; margin-right: 6px; width: 80px; }
+button { padding: 6px 12px; margin-right: 6px; margin-top: 6px; cursor: pointer; }
+pre { background: #f6f6f6; padding: 8px; border-radius: 6px; overflow: auto; }
+.box { border: 1px solid #ddd; padding: 12px; border-radius: 8px; margin-bottom: 12px; background: #fbfbfb; }
+label { font-weight: bold; display: block; margin-top: 8px; margin-bottom: 4px; }
+.mapping { max-height: 180px; overflow:auto; white-space:pre-wrap; font-family: monospace; background:#fff; padding:6px; border-radius:6px; border:1px solid #eee; }
+</style>
+</head>
+<body>
+<h1>Letter-by-Letter RSA Demo</h1>
+
+<div class="box">
+  <label>Upload .txt file</label>
+  <input type="file" id="fileInput" accept=".txt">
+  <button id="loadFileBtn">Load File</button>
+
+  <label>Input Text</label>
+  <textarea id="plainText" placeholder="File content or text will appear here..."></textarea>
+
+  <label>Small Primes p and q</label>
+  <input id="pval" type="number" value="11">
+  <input id="qval" type="number" value="13">
+  <button id="genKeys">Generate Keys</button>
+
+  <div id="keyInfo"></div>
+
+  <button id="encryptBtn">Encrypt</button>
+  <button id="decryptBtn">Decrypt with Private Key</button>
+  <button id="freqBtn">Decrypt by Frequency</button>
+</div>
+
+<div class="box">
+  <label>Ciphertext (numbers separated by spaces)</label>
+  <textarea id="cipherText" placeholder="Encrypted numbers will appear here..."></textarea>
+
+  <button id="downloadCipherBtn">Download Ciphertext</button>
+
+  <label>Decrypted Text</label>
+  <textarea id="decryptedText" placeholder="Decrypted text will appear here..."></textarea>
+
+  <button id="downloadDecryptedBtn">Download Decrypted Text</button>
+
+  <div>
+    <label>Symbol Frequency</label>
+    <pre id="freqView"></pre>
+  </div>
+
+  <div>
+    <label>Symbol → Letter Mapping (Frequency Decryption)</label>
+    <div id="mappingView" class="mapping">[No mapping yet]</div>
+  </div>
+</div>
+
+<script>
+// ---------- TEXT NORMALIZATION ----------
+const ALPH = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+function normalizeText(text){
+  const map = {
+    'à':'A','á':'A','â':'A','ä':'A','ã':'A','å':'A',
+    'è':'E','é':'E','ê':'E','ë':'E',
+    'ì':'I','í':'I','î':'I','ï':'I',
+    'ò':'O','ó':'O','ô':'O','ö':'O','õ':'O',
+    'ù':'U','ú':'U','û':'U','ü':'U',
+    'ç':'C','ñ':'N'
+  };
+  return text.split('').map(ch=>map[ch.toLowerCase()]||ch).join('').toUpperCase().replace(/[^A-Z]/g,'');
+}
+function letterToNum(ch){ const i=ALPH.indexOf(ch); return i>=0?BigInt(i):null; }
+function numToLetter(n){ const i=Number(n); return ALPH[i]||'?'; }
+
+// ---------- BIGINT HELPERS ----------
+function egcd(a,b){ a=BigInt(a); b=BigInt(b); if(b===0n) return {g:a,x:1n,y:0n}; let r=egcd(b,a%b); return {g:r.g,x:r.y,y:r.x-(a/b)*r.y}; }
+function modInv(a,m){ const r=egcd((a%m+m)%m,m); if(r.g!==1n) return null; return (r.x%m+m)%m; }
+function modPow(base,exp,mod){ base%=mod; let r=1n; while(exp>0n){ if(exp&1n) r=(r*base)%mod; base=(base*base)%mod; exp>>=1n;} return r;}
+
+// ---------- RSA STATE ----------
+let RSA={p:null,q:null,n:null,phi:null,e:null,d:null};
+
+// ---------- KEY GENERATION ----------
+function generateKeys(pInt,qInt){
+  const p=BigInt(pInt), q=BigInt(qInt), n=p*q, phi=(p-1n)*(q-1n);
+  let e=7n; if(egcd(e,phi).g!==1n) e=5n;
+  const d=modInv(e,phi);
+  RSA={p,q,n,phi,e,d};
+  return RSA;
+}
+
+// ---------- ENCRYPTION ----------
+function encryptText(plain){
+  const tokens=normalizeText(plain);
+  const out=[];
+  for(let ch of tokens){
+    const m=letterToNum(ch);
+    if(m!==null) out.push(modPow(m,RSA.e,RSA.n).toString());
+  }
+  return out.join(' ');
+}
+
+// ---------- DECRYPTION (PRIVATE KEY) ----------
+function decryptWithD(cipherStr){
+  const nums=cipherStr.trim().split(/\s+/);
+  let out='';
+  for(let n of nums){
+    if(/^\d+$/.test(n)) out+=numToLetter(modPow(BigInt(n),RSA.d,RSA.n));
+  }
+  return out;
+}
+
+// ---------- DECRYPTION BY FREQUENCY ----------
+const italianFreqOrder=['E','A','I','O','L','N','R','T','S','C','D','P','U','M','V','G','H','F','B','Q','Z'];
+function decryptByFrequency(cipherStr){
+  const nums=cipherStr.trim().split(/\s+/);
+  const freq={};
+  for(let n of nums) if(/^\d+$/.test(n)) freq[n]=(freq[n]||0)+1;
+  const sorted=Object.entries(freq).sort((a,b)=>b[1]-a[1]);
+  const mapping={};
+  sorted.forEach(([num],i)=>mapping[num]=italianFreqOrder[i]||'?');
+  let decoded='';
+  for(let n of nums) decoded+=mapping[n]||'?';
+  return {decoded,mapping,freq:sorted};
+}
+
+// ---------- FILE LOADING ----------
+document.getElementById('loadFileBtn').onclick=()=>{
+  const file=document.getElementById('fileInput').files[0];
+  if(!file){alert('Select a .txt file first');return;}
+  const reader=new FileReader();
+  reader.onload=(e)=>{ document.getElementById('plainText').value=e.target.result; };
+  reader.readAsText(file);
+};
+
+// ---------- FILE DOWNLOAD ----------
+function downloadText(filename, text) {
+  const blob = new Blob([text], {type: 'text/plain'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+document.getElementById('downloadCipherBtn').onclick=()=>{
+  const text=document.getElementById('cipherText').value;
+  downloadText('cipher_output.txt', text);
+};
+document.getElementById('downloadDecryptedBtn').onclick=()=>{
+  const text=document.getElementById('decryptedText').value;
+  downloadText('decrypted_output.txt', text);
+};
+
+// ---------- UI EVENTS ----------
+document.getElementById('genKeys').onclick=()=>{
+  const p=document.getElementById('pval').value;
+  const q=document.getElementById('qval').value;
+  if(!p||!q){alert('Enter p and q'); return;}
+  const k=generateKeys(p,q);
+  document.getElementById('keyInfo').innerHTML=`<pre>p=${k.p}, q=${k.q}, n=${k.n}, phi=${k.phi}, e=${k.e}, d=${k.d}</pre>`;
+};
+
+document.getElementById('encryptBtn').onclick=()=>{
+  const plain=document.getElementById('plainText').value;
+  if(!RSA.n){alert('Generate keys first'); return;}
+  const ct=encryptText(plain);
+  document.getElementById('cipherText').value=ct;
+  const freqs=Object.entries(ct.split(/\s+/).reduce((a,c)=>{a[c]=(a[c]||0)+1;return a;},{})).sort((a,b)=>b[1]-a[1]);
+  document.getElementById('freqView').textContent=freqs.map(([s,c])=>`${s}:${c}`).join('\n');
+  document.getElementById('mappingView').textContent='[No mapping yet]';
+  document.getElementById('decryptedText').value='';
+};
+
+document.getElementById('decryptBtn').onclick=()=>{
+  const ct=document.getElementById('cipherText').value;
+  if(!ct||!RSA.d){alert('No ciphertext or keys'); return;}
+  const dec=decryptWithD(ct);
+  document.getElementById('decryptedText').value=dec;
+};
+
+document.getElementById('freqBtn').onclick=()=>{
+  const ct=document.getElementById('cipherText').value;
+  if(!ct){alert('No ciphertext'); return;}
+  const res=decryptByFrequency(ct);
+  document.getElementById('decryptedText').value=res.decoded;
+  document.getElementById('freqView').textContent=res.freq.map(([s,c])=>`${s}:${c}`).join('\n');
+  document.getElementById('mappingView').textContent=Object.entries(res.mapping).map(([s,l])=>`${s} -> ${l}`).join('\n');
+};
+</script>
+</body>
+</html>
