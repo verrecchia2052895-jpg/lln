@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Online Variance Calculator</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      background: #f8f9fa;
+      padding: 2rem;
+      color: #333;
+      max-width: 600px;
+      margin: auto;
+    }
+    h1 {
+      text-align: center;
+      color: #1d4ed8;
+    }
+    .container {
+      background: white;
+      padding: 1.5rem;
+      border-radius: 1rem;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    input {
+      padding: 0.5rem;
+      width: 80%;
+      font-size: 1rem;
+      margin-right: 0.5rem;
+    }
+    button {
+      padding: 0.5rem 1rem;
+      font-size: 1rem;
+      background: #1d4ed8;
+      color: white;
+      border: none;
+      border-radius: 0.5rem;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #2563eb;
+    }
+    .output {
+      margin-top: 1.5rem;
+      background: #f1f5f9;
+      padding: 1rem;
+      border-radius: 0.5rem;
+    }
+    ul {
+      margin-top: 0.5rem;
+      padding-left: 1.2rem;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Online Variance Calculator</h1>
+
+  <div class="container">
+    <p>Enter a number to update the mean and variance dynamically.</p>
+
+    <input type="number" id="newValue" placeholder="Enter number" step="any">
+    <button onclick="addValue()">Add Value</button>
+
+    <div class="output">
+      <p><strong>Count (n):</strong> <span id="count">0</span></p>
+      <p><strong>Mean (x̄):</strong> <span id="mean">–</span></p>
+      <p><strong>Variance (σ²):</strong> <span id="variance">–</span></p>
+    </div>
+  </div>
+
+  <script>
+    let n = 0;        // number of values
+    let mean = 0;     // current mean
+    let M2 = 0;       // sum of squares of differences from the mean (for variance)
+
+    function addValue() {
+      const input = document.getElementById('newValue');
+      const x = parseFloat(input.value);
+      if (isNaN(x)) return;
+
+      n += 1;
+      const delta = x - mean;
+      mean += delta / n;
+      const delta2 = x - mean;
+      M2 += delta * delta2;
+
+      const variance = n > 1 ? M2 / n : 0; // population variance
+
+      // Update UI
+      document.getElementById('count').textContent = n;
+      document.getElementById('mean').textContent = mean.toFixed(4);
+      document.getElementById('variance').textContent = variance.toFixed(4);
+
+      input.value = '';
+      input.focus();
+    }
+  </script>
+
+</body>
+</html>
