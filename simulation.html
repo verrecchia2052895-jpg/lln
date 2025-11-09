@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Server Security Random-Walk Simulation</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:20px}
+    .controls{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+    label{font-size:14px}
+    input[type=number], input[type=range], input[type=text]{padding:6px;border:1px solid #ccc;border-radius:6px}
+    button{padding:8px 12px;border-radius:8px;background:#007bff;color:white;border:0}
+    canvas{border:1px solid #ddd;background:#fff;border-radius:6px;margin-top:15px}
+    table{border-collapse:collapse;margin-top:10px}
+    th,td{padding:6px;border:1px solid #ddd}
+    .small{font-size:13px;color:#555}
+  </style>
+</head>
+<body>
+  <h2>Server security random-walk simulation</h2>
+  <p class="small">Each week there are <code>m</code> independent attackers, each breaching with probability <code>p</code>. The week is secure if none breach (probability <code>(1-p)^m</code>). We assign +1 for a secure week, -1 for a breached week. After <code>n</code> weeks we can view the cumulative score as a biased random walk.</p>
+
+  <div class="controls">
+    <label>Weeks (n): <input id="n" type="number" value="20" min="1" max="1000" /></label>
+    <label>Attackers per week (m): <input id="m" type="number" value="5" min="1" max="1000" /></label>
+    <label>Attack prob (p): <input id="p" type="number" step="0.001" value="0.1" min="0" max="1" /></label>
+    <label>Trajectories: <input id="trials" type="number" value="5000" min="1" max="2000000" /></label>
+    <label>Plotted paths: <input id="paths" type="number" value="10" min="1" max="100" /></label>
+    <button id="run">Run simulation</button>
+    <button id="reset">Reset</button>
+  </div>
+
+  <h4>Histogram of final scores</h4>
+  <canvas id="chartHist" width="900" height="360"></canvas>
+
+  <h4>Sample trajectories (random walk)</h4>
+  <canvas id="chartPaths" width="900" height="400"></canvas>
+
+  <div id="summary"></div>
+  <div id="table"></div>
+
+  <script>
+    function nCk(n,k){if(k<0||k>n)return 0;if(k===0||k===n)return 1;k=Math.min(k,n-k);let res=1;for(let i=1;i<=k;i++){res=res*(n-(k-i))/i;}return res;}
+    function binomialPMF(n,k,p){return nCk(n,k)*Math.pow(p,k)*Math.pow(1-p,n-k);}
+
+    const canvasHist=document.getElementById('chartHist');
+    const ctxH=canvasHist.getContext('2d');
+    const canvasPaths=document.getElementById('chartPaths');
+    const ctxP=canvasPaths.getContext('2d');
+
+    function drawHistogram(scores,theoretical,n,trials){
+      ctxH.clearRect(0,0,canvasHist.width,canvasHist.height);
+      const padding=50,w=canvasHist.width-padding*2,h=canvasHist.height-padding*2;
+      const keys=Object.keys(scores).map(Number).sort((a,b)=>a-b);
+      const bins=keys.length;const maxCount=Math.max(...Object.values(scores));
+      ctxH.strokeStyle='#333';ctxH.beginPath();ctxH.moveTo(padding,padding);
+      ctxH.lineTo(padding,padding+h);ctxH.lineTo(padding+w,padding+h);ctxH.stroke();
+      const barW=w/bins*0.85;
+      keys.forEach((score,i)=>{
+        const count=scores[score];const x=padding+(i+0.075)*(w/bins);
+        const barH=(count/maxCount)*(h*0.9);ctxH.fillStyle='#7aa2ff';
+        ctxH.fillRect(x,padding+h-barH,barW,barH);
+        ctxH.fillStyle='#000';ctxH.font='11px sans-serif';ctxH.textAlign='center';
+        ctxH.fillText(score,x+barW/2,padding+h+14);
+        const theoCount=theoretical[score]*trials;const theoH=(theoCount/maxCount)*(h*0.9);
+        ctxH.strokeStyle='#ff4d4d';ctxH.beginPath();ctxH.moveTo(x,padding+h-theoH);
+        ctxH.lineTo(x+barW,padding+h-theoH);ctxH.stroke();
+      });
+      ctxH.fillStyle='#000';ctxH.textAlign='left';ctxH.fillText('Blue: simulated counts',padding,18);
+      ctxH.fillStyle='#ff4d4d';ctxH.fillText('Red: theoretical binomial scaled',padding+200,18);
+      ctxH.fillStyle='#333';ctxH.textAlign='center';ctxH.fillText('Final cumulative score after '+n+' weeks',padding+w/2,canvasHist.height-6);
+    }
+
+    function drawPaths(traj,n){
+      ctxP.clearRect(0,0,canvasPaths.width,canvasPaths.height);
+      const padding=50,w=canvasPaths.width-padding*2,h=canvasPaths.height-padding*2;
+      const stepX=w/(n-1);
+      const allVals=traj.flat();
+      const minY=Math.min(...allVals,0); // ensure 0 included
+      const maxY=Math.max(...allVals,0); // ensure 0 included
+      const scaleY=(v)=>padding+h-(v-minY)/(maxY-minY||1)*h;
+
+      // axes
+      ctxP.strokeStyle='#333';
+      ctxP.beginPath();
+      ctxP.moveTo(padding,padding);
+      ctxP.lineTo(padding,padding+h);
+      ctxP.lineTo(padding+w,padding+h);
+      ctxP.stroke();
+
+      // Y-axis labels with forced 0 tick
+      ctxP.fillStyle='#000';
+      ctxP.font='11px sans-serif';
+      ctxP.textAlign='right';
+      const yTicks=5;
+      const tickVals=[];
+      for(let i=0;i<=yTicks;i++) tickVals.push(minY+i*(maxY-minY)/yTicks);
+      if(!tickVals.includes(0)) tickVals.push(0);
+      tickVals.sort((a,b)=>a-b);
+      tickVals.forEach(yVal=>{
+        const yPos=scaleY(yVal);
+        ctxP.fillText(yVal.toFixed(1),padding-6,yPos+3);
+        ctxP.strokeStyle=yVal===0?'#888':'#eee';
+        ctxP.beginPath();
+        ctxP.moveTo(padding,yPos);
+        ctxP.lineTo(padding+w,yPos);
+        ctxP.stroke();
+      });
+
+      // X-axis labels
+      ctxP.textAlign='center';
+      const xTicks=Math.min(n,10);
+      for(let i=0;i<=xTicks;i++){
+        const t=Math.round(i*(n-1)/xTicks);
+        const xPos=padding+t*stepX;
+        ctxP.fillText(t,xPos,padding+h+14);
+      }
+
+      // trajectories
+      traj.forEach((path,i)=>{
+        const hue=(i*40)%360;ctxP.strokeStyle=`hsl(${hue},70%,45%)`;
+        ctxP.beginPath();ctxP.moveTo(padding,scaleY(path[0]));
+        for(let t=1;t<n;t++){ctxP.lineTo(padding+t*stepX,scaleY(path[t]));}
+        ctxP.stroke();
+      });
+
+      ctxP.fillStyle='#000';ctxP.textAlign='center';
+      ctxP.fillText('Week number',padding+w/2,canvasPaths.height-6);
+      ctxP.save();
+      ctxP.translate(15,padding+h/2);
+      ctxP.rotate(-Math.PI/2);
+      ctxP.fillText('Cumulative score',0,0);
+      ctxP.restore();
+    }
+
+    function runSimulation(){
+      const n=parseInt(document.getElementById('n').value,10);
+      const m=parseInt(document.getElementById('m').value,10);
+      const p=parseFloat(document.getElementById('p').value);
+      const trials=parseInt(document.getElementById('trials').value,10);
+      const paths=parseInt(document.getElementById('paths').value,10);
+      if(n<=0||m<=0||trials<=0)return alert('n, m, trials must be positive');
+      if(p<0||p>1)return alert('p must be in [0,1]');
+      const secureProb=Math.pow(1-p,m);
+      const scores={};for(let k=0;k<=n;k++){scores[2*k-n]=0;}
+      const samplePaths=[];
+      for(let t=0;t<trials;t++){
+        let secureCount=0;let path=[0];let score=0;
+        for(let week=0;week<n;week++){
+          const secure=Math.random()<secureProb;
+          score+=secure?1:-1;
+          path.push(score);
+          if(secure)secureCount++;
+        }
+        const finalScore=2*secureCount-n;
+        scores[finalScore]++;
+        if(t<paths)samplePaths.push(path);
+      }
+      const theoretical={};for(let k=0;k<=n;k++){const score=2*k-n;theoretical[score]=binomialPMF(n,k,secureProb);}
+      drawHistogram(scores,theoretical,n,trials);
+      drawPaths(samplePaths,n+1);
+      const meanSim=Object.entries(scores).reduce((a,[s,c])=>a+Number(s)*c,0)/trials;
+      const varSim=Object.entries(scores).reduce((a,[s,c])=>a+Math.pow(Number(s)-meanSim,2)*c,0)/trials;
+      const meanTheory=2*n*secureProb-n;const varTheory=4*n*secureProb*(1-secureProb);
+      document.getElementById('summary').innerHTML=`<p class='small'><strong>Params:</strong> n=${n}, m=${m}, p=${p.toFixed(4)}, secureProb=${secureProb.toFixed(6)}, trials=${trials}<br><strong>Mean(sim):</strong> ${meanSim.toFixed(3)} | <strong>Var(sim):</strong> ${varSim.toFixed(3)}<br><strong>Mean(th):</strong> ${meanTheory.toFixed(3)} | <strong>Var(th):</strong> ${varTheory.toFixed(3)}</p>`;
+      const table=document.createElement('table');const thead=document.createElement('thead');thead.innerHTML='<tr><th>Score</th><th>Sim count</th><th>Sim freq</th><th>Theo prob</th><th>Theo expected count</th></tr>';table.appendChild(thead);
+      const tbody=document.createElement('tbody');Object.keys(scores).map(Number).sort((a,b)=>b-a).forEach(score=>{const tr=document.createElement('tr');const simC=scores[score];const simFreq=simC/trials;const theoP=theoretical[score]||0;const theoCount=theoP*trials;tr.innerHTML=`<td>${score}</td><td>${simC}</td><td>${simFreq.toFixed(5)}</td><td>${theoP.toExponential(4)}</td><td>${theoCount.toFixed(2)}</td>`;tbody.appendChild(tr);});table.appendChild(tbody);document.getElementById('table').innerHTML='';document.getElementById('table').appendChild(table);
+    }
+
+    document.getElementById('run').addEventListener('click',runSimulation);
+    document.getElementById('reset').addEventListener('click',()=>{['n','m','p','trials','paths'].forEach(id=>{if(id==='n')document.getElementById(id).value=20;else if(id==='m')document.getElementById(id).value=5;else if(id==='p')document.getElementById(id).value=0.1;else if(id==='trials')document.getElementById(id).value=5000;else document.getElementById(id).value=10;});ctxH.clearRect(0,0,canvasHist.width,canvasHist.height);ctxP.clearRect(0,0,canvasPaths.width,canvasPaths.height);document.getElementById('summary').innerHTML='';document.getElementById('table').innerHTML='';});
+  </script>
+</body>
+</html>
