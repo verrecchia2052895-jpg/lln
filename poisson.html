@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Advanced Poisson Process Simulator</title>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+body { font-family: Arial, sans-serif; max-width: 1000px; margin: 20px auto; }
+input { padding: 6px; width: 120px; margin-right: 15px; }
+button { padding: 8px 12px; margin-top: 10px; cursor: pointer; }
+canvas { background: #fff; margin-top: 20px; border: 1px solid #ccc; }
+h3 { margin-top: 40px; }
+label { display: inline-block; margin-top: 5px; }
+</style>
+</head>
+<body>
+
+<h2>Poisson Process – Full Simulation</h2>
+
+<label>Rate λ: <input id="lambda" type="number" value="5" step="0.1"></label>
+<label>Subintervals n: <input id="n" type="number" value="5000"></label>
+
+<br>
+
+<label>Total Paths (for stats): <input id="paths" type="number" value="5000"></label>
+<label>Paths to Display (on chart): <input id="displayPaths" type="number" value="5"></label>
+
+<br><br>
+<button onclick="runSimulation()">Run Simulation</button>
+
+<h3>Sample Paths (Showing first <span id="displayCount">5</span> paths)</h3>
+<canvas id="pathChart" width="800" height="400"></canvas>
+
+<h3>Histogram of Total Counts (From <span id="totalCount">5000</span> paths)</h3>
+<canvas id="histChart" width="800" height="350"></canvas>
+
+<h3>Waiting Time Distribution</h3>
+<canvas id="waitChart" width="800" height="350"></canvas>
+
+<script>
+let pathChart, histChart, waitChart;
+
+/* Utility */
+function exponentialPDF(lambda, x) {
+    return lambda * Math.exp(-lambda * x);
+}
+
+function runSimulation() {
+    const lambda = parseFloat(document.getElementById("lambda").value);
+    const n = parseInt(document.getElementById("n").value);
+    const p = lambda / n;
+
+    // --- NUOVI INPUT ---
+    const totalPaths = parseInt(document.getElementById("paths").value);
+    const displayPaths = parseInt(document.getElementById("displayPaths").value);
+
+    // Aggiorna le etichette per chiarezza
+    document.getElementById("displayCount").innerText = displayPaths;
+    document.getElementById("totalCount").innerText = totalPaths;
+
+    let pathsForDisplay = []; // Conterrà solo i percorsi da disegnare (es. 5)
+    let finalCounts = [];     // Conterrà tutti i conteggi finali (es. 5000)
+    let waitingTimes = [];    // Conterrà tutti i tempi di attesa
+
+    // --- LOOP PRINCIPALE (ora usa totalPaths) ---
+    for (let k = 0; k < totalPaths; k++) {
+        let count = 0;
+        let cumulative = [];
+        let lastEvent = 0;
+
+        for (let i = 0; i < n; i++) {
+            if (Math.random() < p) {
+                count++;
+                let time = i / n;
+                waitingTimes.push(time - lastEvent);
+                lastEvent = time;
+            }
+            cumulative.push(count);
+        }
+
+        // --- OTTIMIZZAZIONE ---
+        // Aggiungiamo il percorso all'array da disegnare SOLO se
+        // siamo nei primi 'displayPaths'
+        if (k < displayPaths) {
+            pathsForDisplay.push(cumulative);
+        }
+
+        // Questo array invece raccoglie SEMPRE i risultati
+        finalCounts.push(count);
+    }
+
+    // --- CHIAMATE AI GRAFICI ---
+    // Passa solo i percorsi selezionati al primo grafico
+    drawPaths(pathsForDisplay);
+    
+    // Passa i dati statistici completi agli altri due grafici
+    drawHistogram(finalCounts, lambda);
+    drawWaitingTimes(waitingTimes, lambda);
+}
+
+/* Draw Multiple Sample Paths */
+function drawPaths(samplePaths) {
+    // Ora 'samplePaths' ha solo pochi elementi (es. 5)
+    // e il grafico sarà velocissimo
+    const n = samplePaths.length > 0 ? samplePaths[0].length : 0;
+    if (n === 0) {
+        if (pathChart) pathChart.destroy();
+        console.log("No paths to display.");
+        return;
+    }
+
+    const labels = [...Array(n).keys()].map(i => (i / n).toFixed(4));
+
+    const datasets = samplePaths.map((path, i) => ({
+        label: "Path " + (i+1),
+        data: path,
+        borderWidth: 2,
+        fill: false,
+        tension: 0.15,
+        // Ottimizzazione Chart.js per grandi dataset
+        pointRadius: 0, 
+    }));
+
+    if (pathChart) pathChart.destroy();
+    pathChart = new Chart(document.getElementById("pathChart"), {
+        type: 'line',
+        data: { labels, datasets },
+        options: {
+            plugins: { legend: { display: (samplePaths.length < 20) }}, // Nascondi se troppi
+            scales: {
+                x: { title: { display: true, text: "Time (t)" } },
+                y: { title: { display: true, text: "N(t)" }, beginAtZero: true }
+            },
+            animation: false // Disabilita animazione per velocità
+        }
+    });
+}
+
+/* Draw Histogram + Poisson PMF */
+function drawHistogram(counts, lambda) {
+    if (counts.length === 0) return;
+
+    const maxCount = Math.max(0, ...counts);
+    const freq = {};
+    counts.forEach(c => freq[c] = (freq[c] || 0) + 1);
+
+    const labels = [...Array(maxCount+2).keys()]; // +2 per vedere la coda
+    const empirical = labels.map(k => freq[k] || 0);
+
+    const theoretical = labels.map(k =>
+        counts.length * (Math.exp(-lambda) * Math.pow(lambda, k) / factorial(k))
+    );
+
+    if (histChart) histChart.destroy();
+    histChart = new Chart(document.getElementById("histChart"), {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [
+                { label: "Empirical", data: empirical, backgroundColor: "rgba(0,120,255,0.6)" },
+                { label: "Poisson(λ)", data: theoretical, type: "line", borderColor: "red", borderWidth: 2, pointRadius: 0 }
+            ]
+        },
+        options: { scales: { y: { beginAtZero: true } } }
+    });
+}
+
+/* Draw Waiting Time Distribution + Exponential(λ) curve */
+function drawWaitingTimes(wtimes, lambda) {
+    if (wtimes.length === 0) {
+        if (waitChart) waitChart.destroy();
+        console.log("No waiting times to draw.");
+        return;
+    }
+
+    const bins = 30;
+    const maxT = Math.max(...wtimes);
+    const width = maxT / bins;
+
+    // Se width è 0 (es. un solo evento) non fare nulla
+    if (width === 0) {
+        if (waitChart) waitChart.destroy();
+        return;
+    }
+
+    let hist = new Array(bins).fill(0);
+    wtimes.forEach(t => {
+        const b = Math.min(bins - 1, Math.floor(t / width));
+        hist[b]++;
+    });
+
+    const labels = [...Array(bins).keys()].map(i => (i * width).toFixed(3));
+    const theoretical = labels.map(x => exponentialPDF(lambda, parseFloat(x)) * wtimes.length * width);
+
+    if (waitChart) waitChart.destroy();
+    waitChart = new Chart(document.getElementById("waitChart"), {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [
+                { label: "Empirical waiting times", data: hist, backgroundColor: "rgba(0,180,100,0.6)" },
+                { label: "λ e^{-λt}", data: theoretical, type: "line", borderColor:"black", pointRadius: 0 }
+            ]
+        },
+        options: { scales: { y: { beginAtZero: true } } }
+    });
+}
+
+/* Factorial helper */
+function factorial(n) {
+    if (n < 0) return Infinity; // Gestione per sicurezza
+    if (n === 0 || n === 1) return 1;
+    let r = 1;
+    for (let i = 2; i <= n; i++) r *= i;
+    return r;
+}
+
+// Esegui una simulazione al caricamento della pagina
+window.onload = runSimulation;
+</script>
+
+</body>
+</html>
