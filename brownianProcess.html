@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Brownian Motion Simulator (Chart.js Style)</title>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+    body { font-family: Arial, sans-serif; max-width: 1000px; margin: 20px auto; color: #333; }
+    h2, h3 { color: #444; }
+    input { padding: 6px; width: 100px; margin-right: 15px; border: 1px solid #ccc; border-radius: 4px; }
+    button { padding: 10px 15px; margin-top: 15px; cursor: pointer; background-color: #007bff; color: white; border: none; border-radius: 4px; font-size: 1rem; }
+    button:hover { background-color: #0056b3; }
+    canvas { background: #fff; margin-top: 20px; border: 1px solid #ddd; border-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+    label { display: inline-block; margin-top: 10px; font-weight: bold; font-size: 0.9rem; }
+    .control-group { background: #f9f9f9; padding: 15px; border-radius: 8px; border: 1px solid #eee; }
+</style>
+</head>
+<body>
+
+<h2>Brownian Motion – Arithmetic Simulation</h2>
+
+<div class="control-group">
+    <label>Time Steps (N): <input id="steps" type="number" value="200"></label>
+    <label>Drift (μ): <input id="drift" type="number" value="0.0" step="0.1"></label>
+    <label>Volatility (σ): <input id="volatility" type="number" value="1.0" step="0.1"></label>
+    <br>
+    <label>Total Paths (for stats): <input id="totalPaths" type="number" value="2000"></label>
+    <label>Paths to Display: <input id="displayPaths" type="number" value="10"></label>
+    <br>
+    <button onclick="runSimulation()">Run Simulation</button>
+</div>
+
+<h3>Sample Paths (Displaying <span id="displayCount">10</span> paths)</h3>
+<p style="font-size: 0.8rem; color: #666;">Shows the trajectory of the first few simulations.</p>
+<canvas id="pathChart" width="800" height="400"></canvas>
+
+<h3>Final Distribution at T (From <span id="totalCount">2000</span> paths)</h3>
+<p style="font-size: 0.8rem; color: #666;">Comparison between Empirical Histogram and Theoretical Normal PDF.</p>
+<canvas id="histChart" width="800" height="350"></canvas>
+
+<script>
+let pathChart, histChart;
+
+// --- MATH UTILS ---
+
+// Box-Muller transform for Normal Distribution
+function randn_bm() {
+    let u = 0, v = 0;
+    while(u === 0) u = Math.random(); 
+    while(v === 0) v = Math.random();
+    return Math.sqrt( -2.0 * Math.log( u ) ) * Math.cos( 2.0 * Math.PI * v );
+}
+
+// Normal PDF function for theoretical curve
+function normalPDF(x, mean, stdDev) {
+    return (1 / (stdDev * Math.sqrt(2 * Math.PI))) * Math.exp(-0.5 * Math.pow((x - mean) / stdDev, 2));
+}
+
+// --- MAIN SIMULATION ---
+
+function runSimulation() {
+    // 1. Get Inputs
+    const N = parseInt(document.getElementById("steps").value);
+    const mu = parseFloat(document.getElementById("drift").value);
+    const sigma = parseFloat(document.getElementById("volatility").value);
+    const M = parseInt(document.getElementById("totalPaths").value);
+    const displayLimit = parseInt(document.getElementById("displayPaths").value);
+
+    // Update UI text
+    document.getElementById("displayCount").innerText = displayLimit;
+    document.getElementById("totalCount").innerText = M;
+
+    const dt = 1; // Assuming dt=1 for visualization simplicity
+
+    // 2. Data Containers
+    let pathsForDisplay = [];
+    let finalPositions = [];
+    
+    // 3. Simulation Loop
+    for (let k = 0; k < M; k++) {
+        let path = [0]; // Start at 0
+        let currentX = 0;
+
+        for (let t = 0; t < N; t++) {
+            // dX = mu*dt + sigma*sqrt(dt)*Z
+            let shock = randn_bm();
+            let change = (mu * dt) + (sigma * Math.sqrt(dt) * shock);
+            currentX += change;
+            
+            // Only store full path history if we are going to display it
+            if (k < displayLimit) {
+                path.push(currentX);
+            }
+        }
+
+        if (k < displayLimit) {
+            pathsForDisplay.push(path);
+        }
+        
+        finalPositions.push(currentX);
+    }
+
+    // 4. Draw Charts
+    drawPaths(pathsForDisplay, N);
+    
+    // Calculate theoretical stats for T = N
+    const theoreticalMean = mu * N;
+    const theoreticalStd = sigma * Math.sqrt(N);
+    drawHistogram(finalPositions, theoreticalMean, theoreticalStd);
+}
+
+// --- CHART 1: LINES ---
+
+function drawPaths(paths, N) {
+    const ctx = document.getElementById("pathChart").getContext('2d');
+    
+    // Labels 0 to N
+    const labels = Array.from({length: N + 1}, (_, i) => i);
+
+    // Create Datasets
+    const datasets = paths.map((path, i) => {
+        // Color logic: Red if ends positive, Blue if negative
+        const finalVal = path[path.length - 1];
+        const color = finalVal >= 0 ? 'rgba(220, 53, 69, 0.6)' : 'rgba(0, 123, 255, 0.6)';
+
+        return {
+            label: `Path ${i+1}`,
+            data: path,
+            borderColor: color,
+            borderWidth: 1.5,
+            fill: false,
+            pointRadius: 0, // Performance optimization
+            tension: 0.1 // Slight smoothing
+        };
+    });
+
+    // Destroy old chart if exists
+    if (pathChart) pathChart.destroy();
+
+    pathChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels: labels, datasets: datasets },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: { display: false }, // Hide legend to save space
+                tooltip: { enabled: false } // Disable tooltips for performance
+            },
+            scales: {
+                x: { title: { display: true, text: 'Time (t)' } },
+                y: { title: { display: true, text: 'Value (Xt)' } }
+            },
+            animation: false // Disable animation for instant render
+        }
+    });
+}
+
+// --- CHART 2: HISTOGRAM ---
+
+function drawHistogram(data, mean, std) {
+    const ctx = document.getElementById("histChart").getContext('2d');
+    
+    // Binning Logic
+    const numBins = 30;
+    const minVal = Math.min(...data);
+    const maxVal = Math.max(...data);
+    const range = maxVal - minVal;
+    const binWidth = range / numBins;
+
+    // Create bins
+    let bins = new Array(numBins).fill(0);
+    let binLabels = [];
+
+    // Fill bins
+    data.forEach(val => {
+        let idx = Math.floor((val - minVal) / binWidth);
+        if (idx >= numBins) idx = numBins - 1;
+        bins[idx]++;
+    });
+
+    // Generate Labels (center of bin)
+    for (let i = 0; i < numBins; i++) {
+        let center = minVal + (i * binWidth) + (binWidth / 2);
+        binLabels.push(center.toFixed(1));
+    }
+
+    // Generate Theoretical Normal Curve Points matching the bins
+    let theoreticalData = binLabels.map(val => {
+        let x = parseFloat(val);
+        // Scale PDF to match histogram frequency: PDF * TotalSamples * BinWidth
+        return normalPDF(x, mean, std) * data.length * binWidth;
+    });
+
+    if (histChart) histChart.destroy();
+
+    histChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: binLabels,
+            datasets: [
+                {
+                    label: 'Empirical Frequency',
+                    data: bins,
+                    backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                    borderColor: 'rgba(54, 162, 235, 1)',
+                    borderWidth: 1,
+                    barPercentage: 1.0,
+                    categoryPercentage: 1.0
+                },
+                {
+                    label: 'Theoretical Normal PDF',
+                    data: theoreticalData,
+                    type: 'line',
+                    borderColor: 'rgba(255, 99, 132, 1)',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.3
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: { display: true }
+            },
+            scales: {
+                x: { title: { display: true, text: 'Final Position (XT)' } },
+                y: { beginAtZero: true, title: { display: true, text: 'Frequency' } }
+            }
+        }
+    });
+}
+
+// Run initially
+window.onload = runSimulation;
+
+</script>
+
+</body>
+</html>
