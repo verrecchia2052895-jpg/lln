@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Brownian Motion Simulator with choosable stochastic differential equations</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    body { font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; max-width: 900px; margin: 20px auto; color: #333; background: #f8f9fa; padding: 0 15px; }
+    h2, h3 { color: #2c3e50; border-bottom: 2px solid #e9ecef; padding-bottom: 10px; margin-top: 30px; }
+    
+    /* Control Panel */
+    .control-panel { background: #ffffff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); display: flex; flex-wrap: wrap; gap: 15px; align-items: flex-end; margin-bottom: 20px; }
+    .input-group { display: flex; flex-direction: column; }
+    label { font-size: 0.75rem; font-weight: 700; margin-bottom: 5px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; }
+    input, select { padding: 8px 12px; border: 1px solid #ced4da; border-radius: 4px; font-size: 14px; width: 100px; }
+    button { padding: 10px 24px; background-color: #28a745; color: white; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; height: 38px; }
+    button:hover { background-color: #218838; }
+
+    /* Formula & Explanation Box */
+    .info-container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px; }
+    .formula-box { background: #e3f2fd; border-left: 5px solid #2196f3; padding: 15px; border-radius: 4px; }
+    .logic-box { background: #fff3cd; border-left: 5px solid #ffc107; padding: 15px; border-radius: 4px; }
+    .box-title { font-weight: bold; color: #495057; margin-bottom: 10px; font-size: 0.9rem; text-transform: uppercase; }
+    .math-display { font-family: "Times New Roman", Times, serif; font-size: 1.2rem; margin: 10px 0; font-style: italic; }
+    ul.logic-steps { margin: 0; padding-left: 20px; font-size: 0.9rem; }
+    ul.logic-steps li { margin-bottom: 5px; }
+
+    /* --- CHART FIXES START HERE --- */
+    .chart-section {
+        margin-bottom: 40px;
+        background: #fff;
+        padding: 15px;
+        border-radius: 8px;
+        border: 1px solid #dee2e6;
+    }
+    
+    /* This container MUST have a fixed height/position for Chart.js to be stable */
+    .canvas-container {
+        position: relative;
+        height: 300px; 
+        width: 100%;
+    }
+    /* --- CHART FIXES END HERE --- */
+</style>
+</head>
+<body>
+
+<h2>📉 Brownian Motion Simulator with choosable stochastic differential equations</h2>
+
+<div class="control-panel">
+    <div class="input-group">
+        <label>Model</label>
+        <select id="modelType" onchange="updateUI()">
+            <option value="ABM">Arithmetic (ABM)</option>
+            <option value="GBM" selected>Geometric (GBM)</option>
+            <option value="OU">Ornstein-Uhlenbeck</option>
+        </select>
+    </div>
+    <div class="input-group">
+        <label>Start (S₀)</label>
+        <input id="startVal" type="number" value="100">
+    </div>
+    <div class="input-group">
+        <label>Drift (μ)</label>
+        <input id="drift" type="number" value="0.05" step="0.01">
+    </div>
+    <div class="input-group">
+        <label>Volatility (σ)</label>
+        <input id="volatility" type="number" value="0.2" step="0.01">
+    </div>
+    <div class="input-group" id="thetaGroup" style="display:none;">
+        <label>Rev. Speed (θ)</label>
+        <input id="theta" type="number" value="2.0" step="0.1">
+    </div>
+    <div class="input-group">
+        <label>Time Steps (N)</label>
+        <input id="steps" type="number" value="100">
+    </div>
+    <div class="input-group">
+        <label>Simulations</label>
+        <input id="totalPaths" type="number" value="1000">
+    </div>
+    <button onclick="runSimulation()">Run Simulation</button>
+</div>
+
+<div class="info-container">
+    <div class="formula-box">
+        <div class="box-title">🧮 Current Equations</div>
+        <div id="sde-display" class="math-display"></div>
+        <div id="euler-display" class="math-display"></div>
+    </div>
+    <div class="logic-box">
+        <div class="box-title">⚙️ Algorithm Step (The Loop)</div>
+        <ul class="logic-steps">
+            <li>1. Calculate random shock: <b>dW = √dt × Z</b></li>
+            <li>2. Calculate <b>Drift</b> (Deterministic trend)</li>
+            <li>3. Calculate <b>Diffusion</b> (Random volatility)</li>
+            <li>4. <b>Next Price</b> = Current + Drift + Diffusion</li>
+        </ul>
+    </div>
+</div>
+
+<div class="chart-section">
+    <h3>Sample Paths (First 30)</h3>
+    <div class="canvas-container">
+        <canvas id="pathChart"></canvas>
+    </div>
+</div>
+
+<div class="chart-section">
+    <h3>Final Distribution (Histogram)</h3>
+    <div class="canvas-container">
+        <canvas id="histChart"></canvas>
+    </div>
+</div>
+
+<script>
+let pathChart, histChart;
+
+// --- MATH HELPERS ---
+function randn_bm() {
+    let u = 0, v = 0;
+    while(u === 0) u = Math.random(); 
+    while(v === 0) v = Math.random();
+    return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+}
+
+function normalPDF(x, mean, variance) {
+    const std = Math.sqrt(variance);
+    return (1 / (std * Math.sqrt(2 * Math.PI))) * Math.exp(-0.5 * Math.pow((x - mean) / std, 2));
+}
+
+function logNormalPDF(x, mu_log, var_log) {
+    if (x <= 0) return 0;
+    const std_log = Math.sqrt(var_log);
+    return (1 / (x * std_log * Math.sqrt(2 * Math.PI))) * Math.exp(-0.5 * Math.pow((Math.log(x) - mu_log) / std_log, 2));
+}
+
+// --- UI UPDATER ---
+function updateUI() {
+    const model = document.getElementById("modelType").value;
+    const thetaGroup = document.getElementById("thetaGroup");
+    thetaGroup.style.display = (model === 'OU') ? 'flex' : 'none';
+
+    let sdeHtml = "";
+    let eulerHtml = "";
+
+    if (model === "ABM") {
+        sdeHtml = "dS<sub>t</sub> = &mu;dt + &sigma;dW<sub>t</sub>";
+        eulerHtml = "S<sub>n+1</sub> = S<sub>n</sub> + &mu;&Delta;t + &sigma;&radic;&Delta;t&middot;Z";
+    } else if (model === "GBM") {
+        sdeHtml = "dS<sub>t</sub> = &mu;S<sub>t</sub>dt + &sigma;S<sub>t</sub>dW<sub>t</sub>";
+        eulerHtml = "S<sub>n+1</sub> = S<sub>n</sub> + S<sub>n</sub>(&mu;&Delta;t + &sigma;&radic;&Delta;t&middot;Z)";
+    } else if (model === "OU") {
+        sdeHtml = "dS<sub>t</sub> = &theta;(&mu; - S<sub>t</sub>)dt + &sigma;dW<sub>t</sub>";
+        eulerHtml = "S<sub>n+1</sub> = S<sub>n</sub> + &theta;(&mu; - S<sub>n</sub>)&Delta;t + &sigma;&radic;&Delta;t&middot;Z";
+    }
+
+    document.getElementById("sde-display").innerHTML = "<b>SDE:</b> " + sdeHtml;
+    document.getElementById("euler-display").innerHTML = "<b>Euler:</b> " + eulerHtml;
+}
+
+// --- MAIN SIMULATION ---
+function runSimulation() {
+    const model = document.getElementById("modelType").value;
+    const S0 = parseFloat(document.getElementById("startVal").value);
+    const N = parseInt(document.getElementById("steps").value);
+    const mu = parseFloat(document.getElementById("drift").value);
+    const sigma = parseFloat(document.getElementById("volatility").value);
+    const theta = parseFloat(document.getElementById("theta").value);
+    const totalPaths = parseInt(document.getElementById("totalPaths").value);
+
+    const T = 1.0; 
+    const dt = T / N;
+
+    let pathsForDisplay = [];
+    let finalPositions = [];
+    const displayPathsLimit = 30;
+
+    for (let k = 0; k < totalPaths; k++) {
+        let path = [S0];
+        let currentX = S0;
+
+        for (let t = 0; t < N; t++) {
+            let Z = randn_bm(); 
+            let dW = Math.sqrt(dt) * Z;
+            let change = 0;
+
+            if (model === "ABM") {
+                change = mu * dt + sigma * dW;
+            } else if (model === "GBM") {
+                change = currentX * (mu * dt + sigma * dW);
+            } else if (model === "OU") {
+                change = theta * (mu - currentX) * dt + sigma * dW;
+            }
+
+            currentX += change;
+            if (k < displayPathsLimit) path.push(currentX);
+        }
+        
+        if (k < displayPathsLimit) pathsForDisplay.push(path);
+        finalPositions.push(currentX);
+    }
+
+    drawPaths(pathsForDisplay, N);
+    drawHistogram(finalPositions, model, S0, mu, sigma, theta, T);
+}
+
+// --- CHART DRAWING ---
+function drawPaths(paths, N) {
+    const ctx = document.getElementById("pathChart").getContext('2d');
+    const labels = Array.from({length: N + 1}, (_, i) => i);
+    
+    const datasets = paths.map((path, i) => ({
+        label: `Path ${i}`,
+        data: path,
+        borderColor: '#3498db',
+        borderWidth: 1,
+        fill: false,
+        pointRadius: 0,
+        tension: 0
+    }));
+
+    if (pathChart) pathChart.destroy();
+    
+    pathChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels: labels, datasets: datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false, // This is safe now because parent has height: 300px
+            plugins: { legend: { display: false } },
+            scales: { x: { display: false }, y: { title: { display: true, text: 'Price / Value' } } },
+            animation: false
+        }
+    });
+}
+
+function drawHistogram(data, model, S0, mu, sigma, theta, T) {
+    const ctx = document.getElementById("histChart").getContext('2d');
+    const numBins = 40;
+    const minVal = Math.min(...data);
+    const maxVal = Math.max(...data);
+    const range = maxVal - minVal;
+    const binWidth = range / numBins;
+    
+    let bins = new Array(numBins).fill(0);
+    let binLabels = [];
+    
+    data.forEach(val => {
+        let idx = Math.floor((val - minVal) / binWidth);
+        if (idx >= numBins) idx = numBins - 1;
+        bins[idx]++;
+    });
+
+    for (let i = 0; i < numBins; i++) {
+        binLabels.push((minVal + i * binWidth + binWidth/2).toFixed(2));
+    }
+
+    let theoreticalData = binLabels.map(val => {
+        let x = parseFloat(val);
+        let pdfValue = 0;
+        if (model === "ABM") {
+            let theoryMean = S0 + mu * T;
+            let theoryVar = Math.pow(sigma, 2) * T;
+            pdfValue = normalPDF(x, theoryMean, theoryVar);
+        } else if (model === "GBM") {
+            let theoryMeanLog = Math.log(S0) + (mu - 0.5 * Math.pow(sigma, 2)) * T;
+            let theoryVarLog = Math.pow(sigma, 2) * T;
+            pdfValue = logNormalPDF(x, theoryMeanLog, theoryVarLog);
+        } else if (model === "OU") {
+            let expTheta = Math.exp(-theta * T);
+            let theoryMean = mu + (S0 - mu) * expTheta;
+            let theoryVar = (Math.pow(sigma, 2) / (2 * theta)) * (1 - Math.exp(-2 * theta * T));
+            pdfValue = normalPDF(x, theoryMean, theoryVar);
+        }
+        return pdfValue * data.length * binWidth;
+    });
+
+    if (histChart) histChart.destroy();
+    
+    histChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: binLabels,
+            datasets: [
+                { label: 'Simulation Result', data: bins, backgroundColor: 'rgba(52, 152, 219, 0.6)', barPercentage: 1.0, categoryPercentage: 1.0, order: 2 },
+                { label: 'Theoretical Curve', data: theoreticalData, type: 'line', borderColor: '#e74c3c', borderWidth: 2, pointRadius: 0, tension: 0.4, order: 1 }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false, // Safe now
+            plugins: { legend: { display: true } },
+            scales: { y: { beginAtZero: true, display: false }, x: { title: { display: true, text: 'Final Value (ST)' } } },
+            animation: false
+        }
+    });
+}
+
+window.onload = function() { 
+    updateUI(); 
+    runSimulation(); 
+};
+</script>
+</body>
+</html>
